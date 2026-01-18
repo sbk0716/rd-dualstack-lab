@@ -1030,9 +1030,11 @@ dig dual-ok.local A
 **期待される出力**:
 
 ```
-; <<>> DiG 9.18.24 <<>> dual-ok.local A
+; <<>> DiG 9.18.x <<>> dual-ok.local A
 ;; global options: +cmd
 ;; Got answer:
+;; WARNING: .local is reserved for Multicast DNS
+;; You are currently testing what happens when an mDNS query is leaked to DNS
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 12345
 ;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
 
@@ -1042,17 +1044,20 @@ dig dual-ok.local A
 ;; ANSWER SECTION:
 dual-ok.local.          3600    IN      A       172.30.0.10
 
-;; Query time: 1 msec
-;; SERVER: 172.30.0.53#53(172.30.0.53)
+;; Query time: 0 msec
+;; SERVER: 127.0.0.11#53(127.0.0.11) (UDP)
 ;; WHEN: ...
-;; MSG SIZE  rcvd: 60
+;; MSG SIZE  rcvd: 70
 ```
+
+> **`.local` ドメインの WARNING について**
+> `.local` は本来 mDNS（Multicast DNS）用に予約されたドメインです（RFC 6762）。今回はラボ環境のため `.local` を使用していますが、本番環境では `.internal` や `.lan` など別のドメインを使用することを推奨します。
 
 **出力の読み方**:
 - `status: NOERROR`: DNS クエリが成功
 - `ANSWER: 1`: 1 つの回答が返ってきた
 - `A 172.30.0.10`: A レコードとして 172.30.0.10 が返された
-- `SERVER: 172.30.0.53`: CoreDNS（172.30.0.53）が応答
+- `SERVER: 127.0.0.11`: Docker 内部 DNS リゾルバ経由で応答（CoreDNS に転送）
 
 ### DNS サーバの確認
 
@@ -1065,10 +1070,31 @@ cat /etc/resolv.conf
 **期待される出力**:
 
 ```
-nameserver 172.30.0.53
+nameserver 127.0.0.11
+options ndots:0
+
+# ExtServers: [172.30.0.53]
 ```
 
-compose.yaml で `dns: - 172.30.0.53` と設定したため、CoreDNS が DNS サーバとして使用されています。
+> **127.0.0.11 とは？**
+> Docker Engine の内部 DNS リゾルバです。コンテナからの DNS クエリは、まずこのリゾルバが受け取り、`compose.yaml` で指定した DNS サーバ（`172.30.0.53` = CoreDNS）に転送されます。
+>
+> `# ExtServers: [172.30.0.53]` の行で、実際の転送先が確認できます。
+
+CoreDNS が正しく使用されているかは、CoreDNS のログで確認できます（**ホスト側**で実行）:
+
+```bash
+docker logs rd-ds-dns
+```
+
+DNS クエリが処理されていれば、以下のようなログが表示されます:
+
+```
+[INFO] 172.30.0.20:54839 - 12345 "AAAA IN dual-ok.local. udp 33 false 512" NOERROR qr,aa,rd 78 0.000123456s
+[INFO] 172.30.0.20:37437 - 12346 "A IN dual-ok.local. udp 33 false 512" NOERROR qr,aa,rd 62 0.000098765s
+```
+
+これにより、`compose.yaml` で設定した DNS サーバ（CoreDNS）が正しく使用されていることが確認できます。
 
 ## 名前でアクセスしてみる
 
@@ -1081,15 +1107,18 @@ curl -v http://dual-ok.local/
 **期待される出力（抜粋）**:
 
 ```
+* Host dual-ok.local:80 was resolved.
+* IPv6: fd00:dead:beef::10
+* IPv4: 172.30.0.10
 *   Trying [fd00:dead:beef::10]:80...
 * Connected to dual-ok.local (fd00:dead:beef::10) port 80
 > GET / HTTP/1.1
 > Host: dual-ok.local
-> User-Agent: curl/8.5.0
+> User-Agent: curl/8.x.x
 > Accept: */*
 >
 < HTTP/1.1 200 OK
-< Server: nginx/1.25.4
+< Server: nginx/1.2x.x
 < Content-Type: text/html
 ...
 ```
@@ -1097,6 +1126,8 @@ curl -v http://dual-ok.local/
 ### 注目すべきポイント
 
 ```
+* IPv6: fd00:dead:beef::10
+* IPv4: 172.30.0.10
 *   Trying [fd00:dead:beef::10]:80...
 ```
 
@@ -1130,11 +1161,14 @@ curl -4 -v http://dual-ok.local/
 **期待される出力（抜粋）**:
 
 ```
+* Host dual-ok.local:80 was resolved.
+* IPv6: (none)
+* IPv4: 172.30.0.10
 *   Trying 172.30.0.10:80...
 * Connected to dual-ok.local (172.30.0.10) port 80
 ```
 
-今度は IPv4 アドレス（172.30.0.10）に接続しています。
+`-4` オプションにより IPv6 は解決されず（`IPv6: (none)`）、IPv4 アドレス（172.30.0.10）のみに接続しています。
 
 ## ここまでの学び
 
@@ -1249,11 +1283,11 @@ curl -v --connect-timeout 3 http://dual-badv6.local/
 * Connected to dual-badv6.local (172.30.0.10) port 80
 > GET / HTTP/1.1
 > Host: dual-badv6.local
-> User-Agent: curl/8.5.0
+> User-Agent: curl/8.x.x
 > Accept: */*
 >
 < HTTP/1.1 200 OK
-< Server: nginx/1.25.4
+< Server: nginx/1.2x.x
 ...
 ```
 
